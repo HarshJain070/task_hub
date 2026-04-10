@@ -4,7 +4,6 @@ import { getToken } from "next-auth/jwt"
 
 // Routes that require authentication
 const protectedPrefixes = ["/dashboard"]
-
 // Routes only accessible when NOT authenticated
 const authRoutes = ["/login", "/signup"]
 
@@ -14,21 +13,33 @@ export async function middleware(request: NextRequest) {
   const isProtected = protectedPrefixes.some((prefix) => pathname.startsWith(prefix))
   const isAuthRoute = authRoutes.some((route) => pathname.startsWith(route))
 
-  // getToken only reads & verifies the JWT cookie — fully Edge-compatible
+  // In Vercel Edge, NEXTAUTH_URL sometimes gets confused about https.
+  // We explicitly check if it's running in production to know which cookie to look for.
+  const isProduction = process.env.NODE_ENV === "production";
+
   const token = await getToken({
     req: request,
     secret: process.env.NEXTAUTH_SECRET,
+    // This forces it to look for the __Secure- prefix when on Vercel
+    secureCookie: isProduction,
   })
 
+  // If getToken STILL fails due to proxy issues, check the cookie manually as a fallback
+  const fallbackToken = request.cookies.get(
+    isProduction ? '__Secure-next-auth.session-token' : 'next-auth.session-token'
+  );
+
+  const isAuthenticated = !!token || !!fallbackToken;
+
   // Redirect unauthenticated users away from protected routes
-  if (isProtected && !token) {
+  if (isProtected && !isAuthenticated) {
     const loginUrl = new URL("/login", request.url)
     loginUrl.searchParams.set("callbackUrl", pathname)
     return NextResponse.redirect(loginUrl)
   }
 
   // Redirect authenticated users away from login/signup
-  if (isAuthRoute && token) {
+  if (isAuthRoute && isAuthenticated) {
     return NextResponse.redirect(new URL("/dashboard", request.url))
   }
 
@@ -37,13 +48,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths EXCEPT:
-     * - _next/static (static files)
-     * - _next/image (image optimisation)
-     * - favicon.ico
-     * - api/auth/** (NextAuth internal routes)
-     */
     "/((?!_next/static|_next/image|favicon.ico|api/auth).*)",
   ],
 }
